@@ -74,7 +74,7 @@ jobs:
           FIRST=true
 
           if [ -n "$ARM_PLATFORMS" ]; then
-            MATRIX_JSON="${MATRIX_JSON}{\"runner\":\"[self-hosted, ARM64]\",\"platforms\":\"$ARM_PLATFORMS\"}"
+            MATRIX_JSON="${MATRIX_JSON}{\"runner\":[\"self-hosted\",\"ARM64\"],\"platforms\":\"$ARM_PLATFORMS\"}"
             FIRST=false
           fi
 
@@ -89,7 +89,7 @@ jobs:
           echo "Generated matrix: {\"include\":$MATRIX_JSON}"
 
   build-and-push:
-    runs-on: ${{ fromJson(matrix.runner) }}
+    runs-on: ${{ matrix.runner }}
     needs: prepare
     strategy:
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
