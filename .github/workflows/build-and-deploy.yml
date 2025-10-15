@@ -37,6 +37,7 @@ jobs:
       image_tag: ${{ steps.meta.outputs.version }}
       matrix: ${{ steps.matrix.outputs.matrix }}
       services: ${{ steps.services.outputs.services }}
+      deploy_matrix: ${{ steps.deploy-matrix.outputs.matrix }}
 
     steps:
       - name: Checkout code
@@ -106,6 +107,36 @@ jobs:
 
           echo "matrix={\"include\":$MATRIX_JSON}" >> $GITHUB_OUTPUT
           echo "Generated matrix: {\"include\":$MATRIX_JSON}"
+
+      - name: Create deploy matrix
+        id: deploy-matrix
+        run: |
+          PLATFORMS="${{ inputs.platforms }}"
+          FLEET_MAPPING='${{ inputs.fleet_mapping }}'
+
+          # Build JSON array of platform/fleet pairs
+          DEPLOY_MATRIX="["
+          FIRST=true
+
+          IFS=',' read -ra PLATFORM_ARRAY <<< "$PLATFORMS"
+          for PLATFORM in "${PLATFORM_ARRAY[@]}"; do
+            PLATFORM=$(echo $PLATFORM | xargs)
+            FLEET=$(echo "$FLEET_MAPPING" | yq eval ".\"$PLATFORM\"" -)
+
+            if [ "$FLEET" == "null" ] || [ -z "$FLEET" ]; then
+              echo "Error: No fleet mapping found for platform: $PLATFORM"
+              exit 1
+            fi
+
+            [ "$FIRST" = false ] && DEPLOY_MATRIX="${DEPLOY_MATRIX},"
+            DEPLOY_MATRIX="${DEPLOY_MATRIX}{\"platform\":\"$PLATFORM\",\"fleet\":\"$FLEET\"}"
+            FIRST=false
+          done
+
+          DEPLOY_MATRIX="${DEPLOY_MATRIX}]"
+
+          echo "matrix={\"include\":$DEPLOY_MATRIX}" >> $GITHUB_OUTPUT
+          echo "Generated deploy matrix: {\"include\":$DEPLOY_MATRIX}"
 
   build-and-push:
     runs-on: ${{ matrix.runner }}
@@ -198,6 +229,8 @@ jobs:
   deploy-to-balena:
     runs-on: ubuntu-24.04
     needs: [prepare, create-manifest]
+    strategy:
+      matrix: ${{ fromJson(needs.prepare.outputs.deploy_matrix) }}
 
     steps:
       - name: Checkout code
@@ -220,64 +253,38 @@ jobs:
       - name: Install balena CLI
         run: npm install -g balena-cli
 
-      - name: Login to balena CLI and deploy to each fleet
+      - name: Deploy to fleet
         env:
           BALENARC_BALENA_URL: ${{ inputs.balena_environment }}
           BALENA_DEPLOY_API_KEY: ${{ secrets.BALENA_DEPLOY_API_KEY }}
         run: |
           balena login --token ${{ secrets.BALENA_DEPLOY_API_KEY }}
 
-          # Get project name from directory name
-          PROJECT_NAME=$(basename $(pwd))
-
           # Get image tag and services from prepare job
           IMAGE_TAG="${{ needs.prepare.outputs.image_tag }}"
           SERVICES=$(echo '${{ needs.prepare.outputs.services }}' | jq -r '.[]')
 
+          PLATFORM="${{ matrix.platform }}"
+          FLEET="${{ matrix.fleet }}"
+
+          echo "==============================================="
+          echo "Deploying platform: $PLATFORM to fleet: $FLEET"
           echo "Services: $SERVICES"
+          echo "==============================================="
 
-          # Parse fleet mapping
-          FLEET_MAPPING='${{ inputs.fleet_mapping }}'
+          # Deploy each service image to the fleet
+          for SERVICE in $SERVICES; do
+            GHCR_IMAGE="ghcr.io/${{ github.repository }}/${SERVICE}:${IMAGE_TAG}"
 
-          # Split platforms by comma
-          IFS=',' read -ra PLATFORMS <<< "${{ inputs.platforms }}"
+            echo "Deploying $GHCR_IMAGE to $FLEET"
+            balena deploy $FLEET $GHCR_IMAGE
 
-          for PLATFORM in "${PLATFORMS[@]}"; do
-            PLATFORM=$(echo $PLATFORM | xargs)  # Trim whitespace
-
-            # Extract fleet name for this platform from YAML mapping
-            FLEET=$(echo "$FLEET_MAPPING" | yq eval ".\"$PLATFORM\"" -)
-
-            if [ "$FLEET" == "null" ] || [ -z "$FLEET" ]; then
-              echo "Error: No fleet mapping found for platform: $PLATFORM"
+            if [ $? -ne 0 ]; then
+              echo "✗ Failed to deploy $SERVICE to $FLEET for $PLATFORM"
               exit 1
             fi
 
-            echo "==============================================="
-            echo "Processing platform: $PLATFORM for fleet: $FLEET"
-            echo "==============================================="
-
-            # Pull and tag all service images for this platform
-            for SERVICE in $SERVICES; do
-              GHCR_IMAGE="ghcr.io/${{ github.repository }}/${SERVICE}:${IMAGE_TAG}"
-              BALENA_IMAGE_NAME="${PROJECT_NAME}_${SERVICE}:latest"
-
-              echo "Pulling $GHCR_IMAGE for platform $PLATFORM"
-              docker pull --platform $PLATFORM $GHCR_IMAGE
-
-              echo "Tagging as $BALENA_IMAGE_NAME"
-              docker tag $GHCR_IMAGE $BALENA_IMAGE_NAME
-            done
-
-            echo "Deploying to fleet: $FLEET"
-
-            # Deploy to balena (will detect all tagged images)
-            balena deploy $FLEET
-
-            if [ $? -eq 0 ]; then
-              echo "Successfully deployed to $FLEET for $PLATFORM"
-            else
-              echo "Failed to deploy to $FLEET for $PLATFORM"
-              exit 1
-            fi
+            echo "✓ Successfully deployed $SERVICE to $FLEET"
           done
+
+          echo "✓ All services deployed successfully to $FLEET for $PLATFORM"
