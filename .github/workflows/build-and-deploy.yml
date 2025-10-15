@@ -37,6 +37,7 @@ jobs:
       image_tag: ${{ steps.meta.outputs.version }}
       matrix: ${{ steps.matrix.outputs.matrix }}
       services: ${{ steps.services.outputs.services }}
+      service_images: ${{ steps.services.outputs.service_images }}
       deploy_matrix: ${{ steps.deploy-matrix.outputs.matrix }}
 
     steps:
@@ -50,18 +51,34 @@ jobs:
           sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Extract services
+      - name: Extract services and image names
         id: services
         run: |
           if [ -f "docker-compose.yml" ]; then
             SERVICES=$(yq eval '.services | keys | .[]' docker-compose.yml)
+
+            # Build JSON map of service -> image name
+            SERVICE_IMAGE_MAP="{"
+            FIRST=true
+            for SERVICE in $SERVICES; do
+              IMAGE_NAME=$(yq eval ".services.$SERVICE.image" docker-compose.yml)
+              [ "$FIRST" = false ] && SERVICE_IMAGE_MAP="${SERVICE_IMAGE_MAP},"
+              SERVICE_IMAGE_MAP="${SERVICE_IMAGE_MAP}\"$SERVICE\":\"$IMAGE_NAME\""
+              FIRST=false
+            done
+            SERVICE_IMAGE_MAP="${SERVICE_IMAGE_MAP}}"
           else
             SERVICES="main"
+            SERVICE_IMAGE_MAP='{"main":"main"}'
           fi
-          # Convert to JSON array for easy consumption
+
+          # Convert services to JSON array
           SERVICES_JSON=$(echo "$SERVICES" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+
           echo "services=$SERVICES_JSON" >> $GITHUB_OUTPUT
+          echo "service_images=$SERVICE_IMAGE_MAP" >> $GITHUB_OUTPUT
           echo "Detected services: $SERVICES"
+          echo "Service image mapping: $SERVICE_IMAGE_MAP"
 
       - name: Docker metadata
         id: meta
@@ -260,9 +277,10 @@ jobs:
         run: |
           balena login --token ${{ secrets.BALENA_DEPLOY_API_KEY }}
 
-          # Get image tag and services from prepare job
+          # Get data from prepare job
           IMAGE_TAG="${{ needs.prepare.outputs.image_tag }}"
           SERVICES=$(echo '${{ needs.prepare.outputs.services }}' | jq -r '.[]')
+          SERVICE_IMAGES='${{ needs.prepare.outputs.service_images }}'
 
           PLATFORM="${{ matrix.platform }}"
           FLEET="${{ matrix.fleet }}"
@@ -272,19 +290,24 @@ jobs:
           echo "Services: $SERVICES"
           echo "==============================================="
 
-          # Deploy each service image to the fleet
+          # Pull and tag each service image to match docker-compose.yml
           for SERVICE in $SERVICES; do
             GHCR_IMAGE="ghcr.io/${{ github.repository }}/${SERVICE}:${IMAGE_TAG}"
+            IMAGE_NAME=$(echo "$SERVICE_IMAGES" | jq -r ".$SERVICE")
 
-            echo "Deploying $GHCR_IMAGE to $FLEET"
-            balena deploy $FLEET $GHCR_IMAGE
+            echo "Pulling $GHCR_IMAGE for platform $PLATFORM"
+            docker pull --platform $PLATFORM $GHCR_IMAGE
 
-            if [ $? -ne 0 ]; then
-              echo "✗ Failed to deploy $SERVICE to $FLEET for $PLATFORM"
-              exit 1
-            fi
-
-            echo "✓ Successfully deployed $SERVICE to $FLEET"
+            echo "Tagging as ${IMAGE_NAME}:latest"
+            docker tag $GHCR_IMAGE ${IMAGE_NAME}:latest
           done
 
-          echo "✓ All services deployed successfully to $FLEET for $PLATFORM"
+          echo "Deploying to fleet: $FLEET"
+          balena deploy $FLEET
+
+          if [ $? -eq 0 ]; then
+            echo "✓ Successfully deployed to $FLEET for $PLATFORM"
+          else
+            echo "✗ Failed to deploy to $FLEET for $PLATFORM"
+            exit 1
+          fi
