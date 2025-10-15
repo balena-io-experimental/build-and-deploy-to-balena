@@ -177,6 +177,7 @@ jobs:
       - name: Login to balena
         run: balena login --token ${{ secrets.BALENA_DEPLOY_API_KEY }}
         env:
+          BALENARC_BALENA_URL: ${{ inputs.balena_environment }}
           BALENA_DEPLOY_API_KEY: ${{ secrets.BALENA_DEPLOY_API_KEY }}
 
       - name: Login to GitHub Container Registry
