@@ -74,13 +74,13 @@ jobs:
           FIRST=true
 
           if [ -n "$ARM_PLATFORMS" ]; then
-            MATRIX_JSON="${MATRIX_JSON}{\"runner\":[\"self-hosted\",\"ARM64\"],\"platforms\":\"$ARM_PLATFORMS\"}"
+            MATRIX_JSON="${MATRIX_JSON}{\"runner\":\"ubuntu-24.04-arm\",\"platforms\":\"$ARM_PLATFORMS\"}"
             FIRST=false
           fi
 
           if [ -n "$AMD_PLATFORMS" ]; then
             [ "$FIRST" = false ] && MATRIX_JSON="${MATRIX_JSON},"
-            MATRIX_JSON="${MATRIX_JSON}{\"runner\":\"ubuntu-latest\",\"platforms\":\"$AMD_PLATFORMS\"}"
+            MATRIX_JSON="${MATRIX_JSON}{\"runner\":\"ubuntu-24.04\",\"platforms\":\"$AMD_PLATFORMS\"}"
           fi
 
           MATRIX_JSON="${MATRIX_JSON}]"
