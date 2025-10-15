@@ -24,10 +24,6 @@ on:
       BALENA_DEPLOY_API_KEY:
         required: true
 
-permissions:
-  contents: read
-  packages: write
-
 concurrency:
   # This concurrency group ensures that only one job in the group runs at a time.
   # If a new job is triggered, the previous one will be canceled.
