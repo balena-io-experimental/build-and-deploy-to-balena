@@ -1,7 +1,7 @@
 name: Build and Deploy to Balena
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       balena_environment:
         description: 'Balena environment'
@@ -20,6 +20,9 @@ on:
           linux/arm64: myorg/fleet-aarch64
         required: true
         type: string
+    secrets:
+      BALENA_DEPLOY_API_KEY:
+        required: true
 
 permissions:
   contents: read
