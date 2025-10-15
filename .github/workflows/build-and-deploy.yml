@@ -293,7 +293,7 @@ jobs:
           # Pull and tag each service image to match docker-compose.yml
           for SERVICE in $SERVICES; do
             GHCR_IMAGE="ghcr.io/${{ github.repository }}/${SERVICE}:${IMAGE_TAG}"
-            IMAGE_NAME=$(echo "$SERVICE_IMAGES" | jq -r ".$SERVICE")
+            IMAGE_NAME=$(echo "$SERVICE_IMAGES" | jq -r --arg svc "$SERVICE" '.[$svc]')
 
             echo "Pulling $GHCR_IMAGE for platform $PLATFORM"
             docker pull --platform $PLATFORM $GHCR_IMAGE
