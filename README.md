@@ -1,2 +1,2 @@
-# deploy-to-staging
-Workflow for natively building &amp; deploying a release to balena-staging, without dealing with QEMU
+# build-and-deploy-to-balena
+Workflow for using buildx to build and deploy a release to a balena environment while supporting one or more architectures.

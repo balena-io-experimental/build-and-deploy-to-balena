@@ -1,0 +1,206 @@
+name: Build and Deploy to Balena
+
+on:
+  workflow_dispatch:
+    inputs:
+      balena_environment:
+        description: 'Balena environment'
+        required: true
+        default: 'balena-cloud.com'
+        type: string
+      platforms:
+        description: 'Comma-separated list of platforms to build (e.g., linux/amd64,linux/arm64,linux/arm/v7)'
+        required: true
+        default: 'linux/amd64,linux/arm64'
+        type: string
+      fleet_mapping:
+        description: |
+          YAML mapping of platform to fleet name. Example:
+          linux/amd64: myorg/fleet-amd64
+          linux/arm64: myorg/fleet-aarch64
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  # This concurrency group ensures that only one job in the group runs at a time.
+  # If a new job is triggered, the previous one will be canceled.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+        with:
+          ref: main
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha,prefix={{branch}}-
+
+      - name: Create bake file
+        run: |
+          # Create a docker-bake.hcl file that references docker-compose.yml
+          cat > docker-bake.hcl <<'EOF'
+          variable "TAG" {
+            default = "${{ steps.meta.outputs.version }}"
+          }
+
+          variable "REGISTRY" {
+            default = "ghcr.io/${{ github.repository }}"
+          }
+
+          group "default" {
+            targets = ["all"]
+          }
+
+          target "docker-metadata-action" {}
+
+          target "all" {
+            inherits = ["docker-metadata-action"]
+            context = "."
+            dockerfile = "Dockerfile"
+            platforms = ["${{ inputs.platforms }}"]
+            tags = ["${REGISTRY}:${TAG}"]
+          }
+          EOF
+
+          # If docker-compose.yml exists, use it to generate targets
+          if [ -f "docker-compose.yml" ]; then
+            echo "Using docker-compose.yml for bake configuration"
+          fi
+
+      - name: Build and push with bake
+        uses: docker/bake-action@v5
+        with:
+          files: |
+            ./docker-compose.yml
+            ./docker-bake.hcl
+          push: true
+          set: |
+            *.platform=${{ inputs.platforms }}
+            *.cache-from=type=gha
+            *.cache-to=type=gha,mode=max
+            *.output=type=registry,push=true,name-canonical=true,push-by-digest=false
+
+  deploy-to-balena:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+        with:
+          ref: main
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Install balena CLI
+        run: npm install -g balena-cli
+
+      - name: Login to balena
+        run: balena login --token ${{ secrets.BALENA_DEPLOY_API_KEY }}
+        env:
+          BALENA_DEPLOY_API_KEY: ${{ secrets.BALENA_DEPLOY_API_KEY }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy to each fleet
+        run: |
+          # Get project name from directory name
+          PROJECT_NAME=$(basename $(pwd))
+
+          # Get image tag from build job
+          IMAGE_TAG="${{ needs.build-and-push.outputs.image_tag }}"
+
+          # Get all service names from docker-compose.yml
+          if [ -f "docker-compose.yml" ]; then
+            SERVICES=$(yq eval '.services | keys | .[]' docker-compose.yml)
+            echo "Services found in docker-compose.yml:"
+            echo "$SERVICES"
+          else
+            SERVICES="main"
+            echo "No docker-compose.yml found, using default service: main"
+          fi
+
+          # Parse fleet mapping
+          FLEET_MAPPING='${{ inputs.fleet_mapping }}'
+
+          # Split platforms by comma
+          IFS=',' read -ra PLATFORMS <<< "${{ inputs.platforms }}"
+
+          for PLATFORM in "${PLATFORMS[@]}"; do
+            PLATFORM=$(echo $PLATFORM | xargs)  # Trim whitespace
+
+            # Extract fleet name for this platform from YAML mapping
+            FLEET=$(echo "$FLEET_MAPPING" | yq eval ".\"$PLATFORM\"" -)
+
+            if [ "$FLEET" == "null" ] || [ -z "$FLEET" ]; then
+              echo "Error: No fleet mapping found for platform: $PLATFORM"
+              exit 1
+            fi
+
+            echo "==============================================="
+            echo "Processing platform: $PLATFORM for fleet: $FLEET"
+            echo "==============================================="
+
+            # Pull and tag all service images for this platform
+            for SERVICE in $SERVICES; do
+              GHCR_IMAGE="ghcr.io/${{ github.repository }}/${SERVICE}:${IMAGE_TAG}"
+              BALENA_IMAGE_NAME="${PROJECT_NAME}_${SERVICE}:latest"
+
+              echo "Pulling $GHCR_IMAGE for platform $PLATFORM"
+              docker pull --platform $PLATFORM $GHCR_IMAGE
+
+              echo "Tagging as $BALENA_IMAGE_NAME"
+              docker tag $GHCR_IMAGE $BALENA_IMAGE_NAME
+            done
+
+            echo "Deploying to fleet: $FLEET"
+
+            # Deploy to balena (will detect all tagged images)
+            balena deploy $FLEET
+
+            if [ $? -eq 0 ]; then
+              echo "Successfully deployed to $FLEET for $PLATFORM"
+            else
+              echo "Failed to deploy to $FLEET for $PLATFORM"
+              exit 1
+            fi
+          done
