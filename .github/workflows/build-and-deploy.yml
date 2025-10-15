@@ -110,50 +110,18 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create bake file
-        run: |
-          # Create a docker-bake.hcl file that references docker-compose.yml
-          cat > docker-bake.hcl <<'EOF'
-          variable "TAG" {
-            default = "${{ needs.prepare.outputs.image_tag }}"
-          }
-
-          variable "REGISTRY" {
-            default = "ghcr.io/${{ github.repository }}"
-          }
-
-          group "default" {
-            targets = ["all"]
-          }
-
-          target "docker-metadata-action" {}
-
-          target "all" {
-            inherits = ["docker-metadata-action"]
-            context = "."
-            dockerfile = "Dockerfile"
-            platforms = ["${{ matrix.platforms }}"]
-            tags = ["${REGISTRY}:${TAG}"]
-          }
-          EOF
-
-          # If docker-compose.yml exists, use it to generate targets
-          if [ -f "docker-compose.yml" ]; then
-            echo "Using docker-compose.yml for bake configuration"
-          fi
-
       - name: Build and push with bake
         uses: docker/bake-action@v5
         with:
           files: |
             ./docker-compose.yml
-            ./docker-bake.hcl
           push: true
           set: |
             *.platform=${{ matrix.platforms }}
-            *.cache-from=type=gha
-            *.cache-to=type=gha,mode=max
-            *.output=type=registry,push=true,name-canonical=true,push-by-digest=false
+            *.tags=ghcr.io/${{ github.repository }}/$${target.name}:${{ needs.prepare.outputs.image_tag }}
+            *.cache-from=type=gha,scope=$${target.name}
+            *.cache-to=type=gha,mode=max,scope=$${target.name}
+            *.output=type=registry,push=true
 
   deploy-to-balena:
     runs-on: ubuntu-latest
