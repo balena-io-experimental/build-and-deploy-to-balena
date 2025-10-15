@@ -45,7 +45,7 @@ jobs:
 
       - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v5.8.0
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -101,59 +101,27 @@ jobs:
           ref: main
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v3.11.1
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v3.6.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create bake file
-        run: |
-          # Create a docker-bake.hcl file that references docker-compose.yml
-          cat > docker-bake.hcl <<'EOF'
-          variable "TAG" {
-            default = "${{ needs.prepare.outputs.image_tag }}"
-          }
-
-          variable "REGISTRY" {
-            default = "ghcr.io/${{ github.repository }}"
-          }
-
-          group "default" {
-            targets = ["all"]
-          }
-
-          target "docker-metadata-action" {}
-
-          target "all" {
-            inherits = ["docker-metadata-action"]
-            context = "."
-            dockerfile = "Dockerfile"
-            platforms = ["${{ matrix.platforms }}"]
-            tags = ["${REGISTRY}:${TAG}"]
-          }
-          EOF
-
-          # If docker-compose.yml exists, use it to generate targets
-          if [ -f "docker-compose.yml" ]; then
-            echo "Using docker-compose.yml for bake configuration"
-          fi
-
       - name: Build and push with bake
-        uses: docker/bake-action@v5
+        uses: docker/bake-action@v6.9.0
         with:
           files: |
             ./docker-compose.yml
-            ./docker-bake.hcl
           push: true
           set: |
             *.platform=${{ matrix.platforms }}
-            *.cache-from=type=gha
-            *.cache-to=type=gha,mode=max
-            *.output=type=registry,push=true,name-canonical=true,push-by-digest=false
+            *.tags=ghcr.io/${{ github.repository }}/$${target.name}:${{ needs.prepare.outputs.image_tag }}
+            *.cache-from=type=gha,scope=$${target.name}
+            *.cache-to=type=gha,mode=max,scope=$${target.name}
+            *.output=type=registry,push=true
 
   deploy-to-balena:
     runs-on: ubuntu-latest
@@ -166,7 +134,7 @@ jobs:
           ref: main
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6.0.0
         with:
           node-version: '20'
 
@@ -184,7 +152,7 @@ jobs:
           BALENA_DEPLOY_API_KEY: ${{ secrets.BALENA_DEPLOY_API_KEY }}
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v3.6.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
