@@ -105,7 +105,12 @@ jobs:
 
       - name: Install yq
         run: |
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          if [[ "${{ matrix.runner }}" == "ubuntu-24.04-arm" ]]; then
+            YQ_BINARY="yq_linux_arm64"
+          else
+            YQ_BINARY="yq_linux_amd64"
+          fi
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/$YQ_BINARY
           sudo chmod +x /usr/local/bin/yq
 
       - name: Login to GitHub Container Registry
@@ -146,7 +151,7 @@ jobs:
             $SET_ARGS
 
   deploy-to-balena:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [prepare, build-and-push]
 
     steps:
@@ -162,6 +167,7 @@ jobs:
 
       - name: Install yq
         run: |
+          # Deploy job always runs on ubuntu-24.04 (amd64)
           sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
 
